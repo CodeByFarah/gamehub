@@ -1,0 +1,232 @@
+# ---------------------------------------------------------------------------
+# GameHub - local development infrastructure.
+#
+#   docker compose up -d
+#       start Postgres, Redis, Kafka, Prometheus, Grafana, Kafka UI, OTel
+#
+#   docker compose --profile app up -d --build
+#       also build and run the backend container
+#
+#   docker compose down -v
+#       stop everything and delete volumes
+#
+# The backend is NOT started by default. During development you run it from
+# your IDE or with ./gradlew bootRun against these containers. Use the "app"
+# profile when you want the whole stack in Docker, which is what CI does.
+#
+# Kafka runs in KRaft mode, so there is no ZooKeeper container. One less
+# moving part, and it matches how Kafka 4.x ships.
+# ---------------------------------------------------------------------------
+
+name: gamehub
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 5s
+  timeout: 5s
+  retries: 20
+  start_period: 10s
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: gamehub-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gamehub}
+      POSTGRES_USER: ${POSTGRES_USER:-gamehub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Small but deliberate tuning: the 128MB default shared_buffers otherwise
+    # dominates local performance work. pg_stat_statements is what
+    # docs/performance.md uses to find slow queries.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_connections=200
+      - -c
+      - log_min_duration_statement=200
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gamehub} -d ${POSTGRES_DB:-gamehub}"]
+      <<: *healthcheck-defaults
+
+  redis:
+    image: redis:7-alpine
+    container_name: gamehub-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    # appendonly: leaderboard ZSETs are a cache with Postgres as source of
+    # truth, but AOF stops local restarts from looking like data-loss bugs.
+    # allkeys-lru bounds memory - docs/leaderboards.md explains why every
+    # Redis key in GameHub is safe to evict.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      <<: *healthcheck-defaults
+
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: gamehub-kafka
+    ports:
+      - "${KAFKA_EXTERNAL_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Single broker locally, so every replication factor must be 1.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are declared explicitly by kafka-init, so partition counts and
+      # cleanup policies are reviewable in git instead of being accidents of
+      # whichever producer happened to write first.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: gamehub-local-cluster-0001
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  # One-shot container that declares topics. Idempotent, so repeated
+  # `docker compose up -d` is safe.
+  kafka-init:
+    image: apache/kafka:3.9.0
+    container_name: gamehub-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/scripts/create-topics.sh"]
+    volumes:
+      - ./infra/docker/kafka/create-topics.sh:/scripts/create-topics.sh:ro
+    restart: "no"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: gamehub-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: gamehub-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    container_name: gamehub-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./infra/docker/otel/collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC - the backend exports spans here
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus scrape endpoint for collector metrics
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: gamehub-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/docker/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    # Lets Prometheus scrape a backend running on the host (IDE / bootRun),
+    # not only one running inside this compose project.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: gamehub-grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./infra/docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+  # Opt in with: docker compose --profile app up -d --build
+  backend:
+    profiles: ["app"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gamehub-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-gamehub}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-gamehub}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SERVICE_NAME: gamehub-backend
+      # Fails fast with a readable message instead of booting insecurely.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required - copy .env.example to .env}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 45s
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  prometheus-data:
+  grafana-data:

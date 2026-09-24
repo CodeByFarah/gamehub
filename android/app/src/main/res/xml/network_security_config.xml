@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext is permitted for exactly one host: the emulator loopback alias for
+  the developer machine.
+
+  A blanket android:usesCleartextTraffic="true" would permit plaintext to any
+  host in every build, including release. Scoping it to 10.0.2.2 means a
+  release build talking to a real server cannot silently fall back to HTTP.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

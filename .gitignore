@@ -1,0 +1,66 @@
+# --- Secrets (never commit) ---
+.env
+.env.local
+*.local.env
+**/secrets/
+*.pem
+*.p12
+*.jks
+!android/app/debug.keystore
+gcp-service-account*.json
+application-local.yml
+application-secrets.yml
+
+# --- Java / Gradle ---
+.gradle/
+build/
+out/
+*.class
+*.war
+hs_err_pid*
+replay_pid*
+
+# --- Android ---
+local.properties
+android/.cxx/
+android/captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# --- Terraform ---
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+
+# --- IDE ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+
+# --- Test / tooling output ---
+**/test-results/
+**/reports/
+**/jacoco/
+tests/load/results/*.json
+tests/load/results/*.html
+!tests/load/results/.gitkeep
+node_modules/
+
+# --- Docker / runtime volumes ---
+infra/docker/volumes/
+*.log
+
+# --- IDE build output ---
+backend/bin/

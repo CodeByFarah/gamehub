@@ -1,0 +1,15 @@
+# Provisioned rather than clicked through the UI, so a fresh `docker compose
+# up` gives every developer an identical, working Grafana with no setup.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Must match the Prometheus scrape_interval, or Grafana computes rate()
+      # windows that are shorter than the sample spacing and renders gaps.
+      timeInterval: 15s

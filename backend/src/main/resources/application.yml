@@ -1,0 +1,256 @@
+# ---------------------------------------------------------------------------
+# Base configuration, shared by every profile.
+#
+# Profile-specific overrides live in application-{local,docker,test}.yml.
+# Nothing secret appears in this file or in those: secrets arrive only as
+# environment variables, which is what lets the whole tree be committed.
+# ---------------------------------------------------------------------------
+
+spring:
+  application:
+    name: gamehub-backend
+
+  lifecycle:
+    timeout-per-shutdown-phase: 25s
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/gamehub}
+    username: ${SPRING_DATASOURCE_USERNAME:gamehub}
+    password: ${SPRING_DATASOURCE_PASSWORD:change-me-locally}
+    hikari:
+      # Sized against Postgres max_connections (200) divided by the number of
+      # instances we expect to run, leaving headroom for migrations and psql.
+      # A pool larger than the database can serve does not make the system
+      # faster. It moves the queue out of the application, where it is visible
+      # and measurable, and into the database, where it is neither.
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 3000
+      # Below the typical cloud idle-connection reaper, so the pool discards
+      # connections before the network silently drops them underneath it.
+      max-lifetime: 600000
+      idle-timeout: 300000
+      pool-name: gamehub-hikari
+
+  jpa:
+    hibernate:
+      # Never let Hibernate touch the schema. Flyway owns it. "validate" turns
+      # drift between an entity and a migration into a startup failure, rather
+      # than a runtime error on some query nobody exercised in testing.
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+        query:
+          # Turns the silent in-memory pagination of a fetch-joined collection
+          # into a loud failure. That pattern loads the whole table and then
+          # discards most of it, and it is invisible until the table is big.
+          fail_on_pagination_over_collection_fetch: true
+        generate_statistics: false
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: false
+    locations: classpath:db/migration
+    # Fail rather than silently repair. A checksum mismatch means a migration
+    # that already ran was edited, which is a code-review problem and not
+    # something a booting instance should paper over.
+    validate-on-migrate: true
+
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
+      # Short on purpose. Every Redis read in GameHub has a Postgres fallback,
+      # so waiting on a slow Redis is strictly worse than giving up early and
+      # reading the source of truth.
+      timeout: 500ms
+      connect-timeout: 500ms
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # acks=all together with idempotence: the outbox relay must never lose an
+      # event it has already marked published, and must never create a
+      # duplicate through an internal producer retry.
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 30000
+        linger.ms: 10
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP_PREFIX:gamehub}-default
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      # Offsets are committed by the container after the listener returns, not
+      # by a background timer. A crash mid-handler therefore replays the record
+      # instead of skipping it, which is exactly what the idempotency ledger in
+      # processed_events is built to absorb.
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      max-poll-records: 100
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.trusted.packages: com.gamehub.domain.event
+        # Must exceed the worst-case time to process max-poll-records, or the
+        # broker evicts a healthy consumer mid-batch and the batch replays.
+        max.poll.interval.ms: 300000
+    listener:
+      ack-mode: record
+      concurrency: 3
+      observation-enabled: true
+
+  threads:
+    virtual:
+      # Java 21 virtual threads for request handling. Request threads here
+      # spend nearly all their time blocked on Postgres, Redis or Kafka, which
+      # is precisely the workload virtual threads exist for.
+      enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    # Stack traces are never returned to a client. Errors are shaped by
+    # GlobalExceptionHandler into the documented envelope instead.
+    include-stacktrace: never
+    include-message: never
+  tomcat:
+    max-http-form-post-size: 2MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Only what is needed. Every extra actuator endpoint is attack surface,
+        # and /env and /heapdump in particular leak configuration and memory.
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+      group:
+        # Liveness excludes dependencies deliberately: Kafka being down is not
+        # a reason to restart this process. Readiness includes them, so an
+        # instance that cannot serve is pulled from the load balancer instead
+        # of being killed and restarted into the same broken dependency.
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,redis
+  metrics:
+    tags:
+      application: gamehub-backend
+  tracing:
+    sampling:
+      probability: ${OTEL_TRACES_SAMPLER_ARG:0.1}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+
+gamehub:
+  security:
+    # No default. A missing JWT_SECRET must stop the instance from starting.
+    jwt-secret: ${JWT_SECRET}
+    access-token-ttl: 15m
+    refresh-token-ttl: 30d
+    issuer: gamehub
+    bcrypt-strength: 12
+    rate-limit-requests-per-window: 300
+    ai-rate-limit-requests-per-window: 20
+
+  matchmaking:
+    skill-weight: 0.50
+    latency-weight: 0.30
+    region-weight: 0.20
+    patience-weight: 0.40
+    skill-normaliser-elo: 400
+    latency-budget-ms: 150
+    base-skill-window-elo: 100
+    window-expansion-per-sec: 25
+    max-skill-window-elo: 1200
+    base-acceptance-cost: 0.25
+    max-acceptance-cost: 0.90
+    patience-seconds: 45
+    tick-interval: 1s
+    ticket-ttl: 5m
+    candidate-limit: 50
+    bucket-batch-size: 500
+
+  cache:
+    game-catalogue: 1m
+    game-detail: 15m
+    leaderboard: 2d
+    recommendations: 6h
+    user-rank: 10s
+    matchmaker-lease: 10s
+    rate-limit-window: 1m
+
+  ai:
+    api-key: ${GEMINI_API_KEY:}
+    model: ${GEMINI_MODEL:gemini-2.5-flash}
+    base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com}
+    timeout: 8s
+    max-retries: 2
+    max-prompt-length: 500
+    recommendation-ttl: 6h
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      gemini:
+        # Opens when half the calls in a 20-call window fail. Sized so that a
+        # provider outage stops costing latency within a few seconds, while a
+        # single unlucky timeout cannot trip it.
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+  retry:
+    instances:
+      gemini:
+        max-attempts: 3
+        wait-duration: 250ms
+        # Exponential with jitter. Without jitter every instance that failed at
+        # the same moment retries at the same moment, which is how a brief
+        # provider blip becomes a self-inflicted thundering herd.
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        enable-randomized-wait: true
+        randomized-wait-factor: 0.5
+
+logging:
+  level:
+    root: INFO
+    com.gamehub: INFO
+    org.springframework.kafka: WARN
+  pattern:
+    # traceId and spanId on every line, so a log search and a trace view can be
+    # joined on one identifier. Populated by micrometer-tracing.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:},%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n"
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

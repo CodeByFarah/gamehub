@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GameHub</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_discover">Discover</string>
+    <string name="nav_play">Play</string>
+    <string name="nav_profile">Profile</string>
+
+    <!-- Screens -->
+    <string name="title_leaderboard">Leaderboard</string>
+    <string name="title_achievements">Achievements</string>
+    <string name="title_matchmaking">Find a match</string>
+    <string name="title_cloud_saves">Cloud saves</string>
+    <string name="title_assistant">Assistant</string>
+    <string name="title_settings">Settings</string>
+
+    <!-- States. Error copy names what failed and what to do, never "an error
+         occurred", which tells the player nothing actionable. -->
+    <string name="state_loading">Loading</string>
+    <string name="state_empty_games">No games match that search</string>
+    <string name="state_empty_achievements">Play a game to start unlocking achievements</string>
+    <string name="state_empty_leaderboard">No scores yet. Be the first</string>
+    <string name="state_empty_saves">No cloud saves yet</string>
+    <string name="state_empty_recommendations">Play a few games and we will suggest more</string>
+
+    <string name="error_offline">You are offline. Showing what was saved on this device</string>
+    <string name="error_server">GameHub is not responding. Try again in a moment</string>
+    <string name="error_unauthorized">Your session expired. Sign in again</string>
+    <string name="error_generic">Something went wrong</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_sign_in">Sign in</string>
+
+    <!-- AI honesty. Shown whenever a response carries degraded=true, because
+         the API reports it and the UI should not pretend otherwise. -->
+    <string name="ai_degraded">Interpreted without AI</string>
+    <string name="ai_ungrounded">Answer may not reflect this catalogue</string>
+
+    <!-- Cloud save conflict -->
+    <string name="conflict_title">This save was changed elsewhere</string>
+    <string name="conflict_body">Another device saved newer progress. Choose which to keep</string>
+    <string name="conflict_keep_local">Keep this device</string>
+    <string name="conflict_keep_server">Keep the other device</string>
+</resources>

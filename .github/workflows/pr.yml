@@ -1,0 +1,189 @@
+# ---------------------------------------------------------------------------
+# Pull request checks.
+#
+# Split into parallel jobs rather than one long pipeline, so a developer sees
+# the fast signal first. Unit tests and static analysis finish in a couple of
+# minutes; integration tests take considerably longer because they start real
+# containers. Waiting on the slow job to learn that the code does not compile
+# is the thing this layout avoids.
+# ---------------------------------------------------------------------------
+
+name: Pull request
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push supersedes the previous run. Without this, a branch pushed three
+# times holds three sets of runners doing work nobody will look at.
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  build-and-unit-test:
+    name: Build and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # Only the default branch writes to the cache. A PR that could write
+          # would let a fork poison the cache for everything downstream.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Compile
+        working-directory: backend
+        run: ./gradlew compileJava compileTestJava --no-daemon
+
+      - name: Unit and architecture tests
+        working-directory: backend
+        # The `test` task excludes the integration and concurrency tags, so
+        # this job needs no Docker and stays fast.
+        run: ./gradlew test --no-daemon
+
+      - name: Publish test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: backend/build/reports/tests/test
+          retention-days: 7
+
+      - name: Coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: backend/build/reports/jacoco
+          retention-days: 7
+
+  integration-test:
+    name: Integration and concurrency tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # No explicit Docker setup step: ubuntu-latest runners already have a
+      # working daemon, which is what Testcontainers needs.
+      - name: Integration and concurrency tests
+        working-directory: backend
+        env:
+          # Reuse is off in CI on purpose. A fresh environment per run matters
+          # more than startup time, and a reused container would carry state
+          # between unrelated runs.
+          TESTCONTAINERS_REUSE_ENABLE: 'false'
+        run: ./gradlew integrationTest --no-daemon
+
+      - name: Publish integration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-report
+          path: backend/build/reports/tests/integrationTest
+          retention-days: 7
+
+  static-analysis:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, so the secret scan can diff the whole branch rather
+          # than only the tip commit. A secret added and then amended away is
+          # still in the history and still leaked.
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for vulnerable dependencies
+        uses: actions/dependency-review-action@v4
+        # Only meaningful on a pull request, where there is a base to diff
+        # against.
+        if: github.event_name == 'pull_request'
+        with:
+          fail-on-severity: high
+
+      - name: Verify the Docker image builds
+        # Building without pushing. A Dockerfile that no longer builds is a
+        # broken deploy waiting to happen, and it is cheap to catch here.
+        run: docker build -t gamehub-backend:pr-check ./backend
+
+  validate-infrastructure:
+    name: Validate infrastructure definitions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.10.3'
+
+      - name: Terraform format check
+        working-directory: infra/terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform validate
+        working-directory: infra/terraform
+        # init without a backend, because validation needs the providers but
+        # must not touch remote state from a pull request.
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate the compose file
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Set up k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Type-check the load scripts
+        # Does not run the scenarios, only parses them. A syntax error in a
+        # load script is otherwise discovered at the moment someone needs it.
+        run: |
+          for script in tests/load/*.js; do
+            echo "checking ${script}"
+            k6 inspect "${script}" > /dev/null
+          done

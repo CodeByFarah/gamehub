@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# Integration tests.
+#
+# Connection details are deliberately absent. Testcontainers starts real
+# Postgres, Redis and Kafka on random ports and injects the URLs through
+# @DynamicPropertySource, so hardcoding anything here would fight it.
+# ---------------------------------------------------------------------------
+
+spring:
+  jpa:
+    hibernate:
+      # Flyway still owns the schema in tests. Letting Hibernate create it
+      # would mean tests run against a schema that has never been migrated,
+      # so a broken migration would pass CI and fail on deploy.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+
+  flyway:
+    enabled: true
+    # Seed data is loaded by V2 in tests as well as locally, so tests exercise
+    # the same catalogue a developer sees.
+    clean-disabled: false
+
+  kafka:
+    consumer:
+      # Each test class gets an isolated group, set per-test. Sharing one
+      # would let a previous test committed offset hide records from the next.
+      auto-offset-reset: earliest
+
+gamehub:
+  security:
+    # Test-only signing key. Long enough for HS256 and worth nothing, since it
+    # is public in this repository and only ever signs tokens for a throwaway
+    # container.
+    jwt-secret: test-only-signing-key-not-a-secret-at-all-0123456789
+    bcrypt-strength: 4
+
+  # Cost 4 rather than 12 above. BCrypt at 12 costs roughly a quarter second
+  # per hash, which across a suite that registers many users turns into
+  # minutes of pure key stretching for no test value.
+
+  ai:
+    # No key, so tests run against the deterministic fallback. Tests that need
+    # provider behaviour stub the AiClient port directly rather than calling a
+    # paid API from CI.
+    api-key: ""
+
+  matchmaking:
+    # Ticks are triggered explicitly in tests rather than waiting on a
+    # scheduler, so a test does not have to sleep to observe a result.
+    tick-interval: 1h
+
+logging:
+  level:
+    com.gamehub: DEBUG
+    org.testcontainers: INFO
+    # Ryuk is the Testcontainers reaper. Its startup chatter drowns real
+    # output on every single test class.
+    com.github.dockerjava: WARN

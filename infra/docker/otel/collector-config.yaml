@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# OpenTelemetry Collector.
+#
+# The backend exports OTLP here rather than to a backend-specific SDK. That
+# indirection is the point: swapping Jaeger for Tempo, or adding a second
+# destination, is a change to this file and not a redeploy of the application.
+# ---------------------------------------------------------------------------
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batching is not optional at any real volume: one export per span would
+  # spend more time in network overhead than in useful work.
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+  # A hard ceiling so the collector cannot become the thing that runs the host
+  # out of memory during a traffic spike. It sheds load instead.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 96
+
+exporters:
+  # Local development: spans go to the console so they can be read without
+  # standing up a tracing backend. Cloud deployment replaces this with an
+  # exporter to Cloud Trace; see docs/observability.md.
+  debug:
+    verbosity: normal
+
+  # Span-derived metrics, scraped by Prometheus on 8889. Gives request rate
+  # and latency broken down by span attributes, which complements the
+  # Micrometer metrics the application exports itself.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+connectors:
+  # Turns spans into RED metrics (rate, errors, duration) without the
+  # application having to emit them twice.
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s]
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug, spanmetrics]
+    metrics:
+      receivers: [otlp, spanmetrics]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]

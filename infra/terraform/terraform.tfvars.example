@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# No real value appears in this file, and none should ever be committed to it.
+# ---------------------------------------------------------------------------
+
+# Required. No default, because applying into the wrong project is not a
+# recoverable mistake.
+project_id = "your-gcp-project-id"
+
+region      = "europe-west1"
+environment = "dev"
+
+# Required, and must be an immutable tag. The main branch workflow prints the
+# exact value to use after it publishes an image.
+backend_image = "europe-west1-docker.pkg.dev/your-gcp-project-id/gamehub/gamehub-backend:0000000000000000000000000000000000000000"
+
+# Cheapest tier. Fine for a portfolio deployment, not a production sizing.
+db_tier = "db-f1-micro"
+
+# Leave true unless you genuinely intend `terraform destroy` to delete the
+# database and everything in it.
+db_deletion_protection = true
+
+redis_memory_gb = 1
+
+# Zero means scale to zero and pay nothing while idle, at the cost of a cold
+# start on the first request after a quiet period.
+min_instances = 0
+
+# Bounded on purpose: each instance opens a pool of 20 database connections.
+max_instances = 5
+
+# Optional. Leave empty to deploy with AI running in deterministic fallback
+# mode, which is fully supported.
+#
+# Do NOT paste a real key here if this file is ever at risk of being
+# committed. Prefer:
+#   terraform apply -var="gemini_api_key=$(cat ~/.gemini-key)"
+gemini_api_key = ""

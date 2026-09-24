@@ -1,0 +1,120 @@
+# ---------------------------------------------------------------------------
+# Alert rules.
+#
+# Every rule here fires on a symptom a user would notice, not on a resource
+# number. High CPU is not an incident; slow requests are. Rules that page on
+# causes rather than symptoms are the ones people learn to ignore.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: gamehub-availability
+    rules:
+
+      - alert: BackendDown
+        expr: up{job="gamehub-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: GameHub backend instance is not responding to scrapes
+          description: >
+            {{ $labels.instance }} has been unreachable for a minute. Check the
+            container or process before looking at anything else.
+
+      - alert: HighErrorRate
+        # 5xx as a fraction of all requests. Ratio rather than absolute count,
+        # so the threshold does not need retuning as traffic grows.
+        expr: |
+          sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+            /
+          sum(rate(http_server_requests_seconds_count[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 5 percent of requests are failing
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_server_requests_seconds_bucket[5m])) by (le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: p99 request latency is above one second
+
+  - name: gamehub-pipeline
+    rules:
+
+      - alert: OutboxBacklogGrowing
+        # The relay publishes committed events. A rising backlog means events
+        # are being written faster than they are being published, which ends
+        # in achievements and leaderboards falling behind gameplay.
+        expr: gamehub_outbox_backlog > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Outbox backlog exceeds 1000 unpublished events
+
+      - alert: OutboxStalled
+        # Distinguishes "behind" from "not running at all". A backlog that is
+        # not shrinking while publishes are flat means the relay is stuck.
+        expr: |
+          gamehub_outbox_backlog > 100
+            and
+          rate(gamehub_outbox_published_total[5m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Outbox relay has stopped publishing while a backlog exists
+
+      - alert: KafkaConsumerLag
+        expr: kafka_consumer_fetch_manager_records_lag_max > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A Kafka consumer group is more than 10000 records behind
+
+  - name: gamehub-product
+    rules:
+
+      - alert: MatchmakingQueueBacklog
+        # Players are queueing but not being matched. Either the tick is not
+        # running, or the population in some bucket is too thin.
+        expr: gamehub_matchmaking_queue_depth > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Matchmaking queue depth is above 500
+
+      - alert: CacheHitRateCollapsed
+        # Not an outage, since every cache has a Postgres fallback. It is an
+        # early warning that the database is about to take the full read load.
+        expr: |
+          sum(rate(gamehub_cache_access_total{result="hit"}[10m]))
+            /
+          sum(rate(gamehub_cache_access_total[10m])) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Cache hit rate has fallen below 50 percent
+
+      - alert: AiFailureRate
+        # The AI path degrades rather than failing, so this never pages. It is
+        # how we find out the provider is unhealthy before the bill does.
+        expr: |
+          sum(rate(gamehub_ai_request_total{result!="success"}[10m]))
+            /
+          sum(rate(gamehub_ai_request_total[10m])) > 0.3
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: Over 30 percent of AI requests are falling back

@@ -1,0 +1,204 @@
+{
+  "uid": "gamehub-overview",
+  "title": "GameHub Overview",
+  "description": "Request health, the event pipeline, matchmaking and the AI path. Ordered so the top row answers 'is it working?' before anything else.",
+  "tags": ["gamehub"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Request health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Requests per second",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count[5m]))",
+          "legendFormat": "rps"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 1 } }
+    },
+    {
+      "type": "stat",
+      "title": "Error rate",
+      "description": "5xx as a fraction of all requests. Ratio, not count, so the threshold survives traffic growth.",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count[5m])), 0.001)",
+          "legendFormat": "error rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency percentiles",
+      "description": "p50, p95 and p99 together. The mean is deliberately absent: it hides the tail that users actually feel.",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by endpoint",
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_count[5m]))",
+          "legendFormat": "{{uri}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "row",
+      "title": "Event pipeline",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox backlog",
+      "description": "Unpublished events. A rising line means the relay is losing ground to the write rate; a flat non-zero line with no publishes means it is stuck.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "gamehub_outbox_backlog", "legendFormat": "backlog" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox publish rate",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "targets": [
+        { "expr": "rate(gamehub_outbox_published_total[5m])", "legendFormat": "published" },
+        { "expr": "rate(gamehub_outbox_failed_total[5m])", "legendFormat": "failed" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer events, first-time vs duplicate",
+      "description": "Duplicates are expected under at-least-once delivery and are absorbed by the idempotency ledger. A spike means heavy redelivery, which is worth investigating even though nothing is incorrect.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(gamehub_consumer_events_total[5m]))",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Matchmaking",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue depth",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 21 },
+      "targets": [
+        { "expr": "gamehub_matchmaking_queue_depth", "legendFormat": "waiting tickets" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Matches and stale proposals",
+      "description": "Stale proposals are normal under concurrency: two instances proposed the same pairing and one lost the atomic claim. A high ratio to matches means the per-bucket lease is not deduplicating work effectively.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 21 },
+      "targets": [
+        { "expr": "rate(gamehub_matchmaking_matches_total[5m])", "legendFormat": "matches" },
+        { "expr": "rate(gamehub_matchmaking_stale_proposals_total[5m])", "legendFormat": "stale" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tick duration p95",
+      "description": "Must stay well under the one-second tick interval, or ticks overlap and the lease does all the work.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 21 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(gamehub_matchmaking_tick_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "row",
+      "title": "Cache, cloud saves and AI",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit rate",
+      "description": "Correctness never depends on this. A collapse means Postgres is about to take the full read load.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 30 },
+      "targets": [
+        {
+          "expr": "sum(rate(gamehub_cache_access_total{result=\"hit\"}[5m])) / clamp_min(sum(rate(gamehub_cache_access_total[5m])), 0.001)",
+          "legendFormat": "hit rate"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cloud save conflicts",
+      "description": "The evidence for whether optimistic concurrency is still the right choice. A conflict rate climbing into double digits is the signal to revisit the strategy.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 30 },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(gamehub_cloudsave_write_total[5m]))",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "AI outcomes and latency",
+      "description": "invalid means the provider was up but returned unusable output, which needs a prompt change rather than a page.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 30 },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(gamehub_ai_request_total[5m]))",
+          "legendFormat": "{{result}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(gamehub_ai_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95 latency"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+# ---------------------------------------------------------------------------
+# The backend running inside docker-compose, activated by the "app" profile.
+#
+# Differs from local only in hostnames: compose service names instead of
+# localhost. Everything else is inherited, so the two profiles cannot drift.
+# ---------------------------------------------------------------------------
+
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres:5432/gamehub
+  data:
+    redis:
+      host: redis
+  kafka:
+    bootstrap-servers: kafka:19092
+
+management:
+  otlp:
+    tracing:
+      endpoint: http://otel-collector:4317
+
+logging:
+  level:
+    com.gamehub: INFO

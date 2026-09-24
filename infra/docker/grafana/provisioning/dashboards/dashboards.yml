@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: GameHub
+    orgId: 1
+    folder: GameHub
+    type: file
+    disableDeletion: false
+    # Picks up edits to the JSON without a Grafana restart, so a dashboard can
+    # be iterated on in a normal edit-save loop.
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

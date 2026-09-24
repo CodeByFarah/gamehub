@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Prometheus scrape configuration for local development.
+#
+# Two backend targets are declared on purpose. During development the backend
+# usually runs on the host from the IDE, and in CI it runs inside compose.
+# Declaring both means the same config works either way; the one that is not
+# running simply shows as down.
+# ---------------------------------------------------------------------------
+
+global:
+  # 15s rather than the 1m default. Local work involves watching a metric move
+  # after a change, and a minute of latency makes that feel broken.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+scrape_configs:
+
+  - job_name: gamehub-backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # Backend inside compose (docker compose --profile app up).
+      - targets: [backend:8080]
+        labels:
+          source: compose
+      # Backend on the host, run from the IDE or ./gradlew bootRun.
+      - targets: [host.docker.internal:8080]
+        labels:
+          source: host
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: [otel-collector:8889]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
